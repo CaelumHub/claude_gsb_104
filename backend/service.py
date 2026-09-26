@@ -70,6 +70,7 @@ class SocialGraphService:
         self._graph_dirty = False
         self._community_cache: Optional[dict] = None
         self._pagerank_cache: Optional[Dict[int, float]] = None
+        self._pagerank_damping: Optional[float] = None
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
         self._community_dirty = False
         self._pagerank_dirty = False
@@ -400,21 +401,30 @@ class SocialGraphService:
         return -1
 
     def compute_pagerank(self, top: int = 20, force: bool = False) -> dict:
+        # The damping factor comes from the user-editable settings (default
+        # 0.85).  Clamp below 1.0 so the teleport term never vanishes --
+        # without teleport mass the walk is non-ergodic and the iteration
+        # cannot converge to a stable, graph-determined ranking.
+        settings = self.settings.get()
+        damping = float(
+            settings.get("algorithm", {}).get("pagerankDamping", config.PAGERANK_DAMPING)
+        )
+        damping = min(max(damping, 0.0), 0.99)
         with self._lock:
             if (
                 not force
                 and self._pagerank_cache is not None
                 and not self._pagerank_dirty
+                and self._pagerank_damping == damping
             ):
                 ranks = self._pagerank_cache
             else:
                 graph = self.get_graph()
-                settings = self.settings.get()
-                damping = config.PAGERANK_DAMPING_OVERRIDE
                 with config.Timed() as timer:
                     ranks = pagerank(graph, damping=damping)
                 with self._lock:
                     self._pagerank_cache = ranks
+                    self._pagerank_damping = damping
                     self._pagerank_dirty = False
                 self.derived.save_pagerank(ranks)
                 elapsed = timer.elapsed_ms
@@ -431,7 +441,7 @@ class SocialGraphService:
         return {
             "top": items,
             "computed_at": config.now_ms(),
-            "damping": self.settings.get()["algorithm"]["pagerankDamping"],
+            "damping": damping,
         }
 
     # ------------------------------------------------------------------

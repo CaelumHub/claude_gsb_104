@@ -264,18 +264,20 @@ def pagerank(
         s = sum(rank)
         rank = [x / s for x in rank] if s > 0 else [1.0 / n] * n
     else:
-        rank = [float(i + 1) for i in range(n)]
-        s = sum(rank) or 1.0
-        rank = [x / s for x in rank]
+        # Uniform start: every node gets equal probability mass (1/n).
+        rank = [1.0 / n] * n
 
     dangling = [i for i in range(n) if out_degree[i] == 0]
     dangling_sum_prev = sum(rank[i] for i in dangling) if dangling else 0.0
 
+    # Teleport mass is spread uniformly over all n nodes.
+    teleport = (1.0 - damping) / n
     for _ in range(max_iter):
-        new_rank = [0.0] * n
-        teleport = (1.0 - damping)
-        for i in range(n):
-            new_rank[i] = teleport + damping * dangling_sum_prev
+        # Dangling nodes (out-degree 0) would leak their rank mass out of the
+        # system; redistribute it uniformly over all nodes, exactly like the
+        # teleport term, so the scores stay a probability distribution.
+        dangling_share = damping * dangling_sum_prev / n
+        new_rank = [teleport + dangling_share] * n
 
         for i in range(n):
             for nb in graph.neighbors(id_of(i)):
@@ -284,6 +286,9 @@ def pagerank(
                     continue
                 new_rank[i] += damping * rank[j] / out_degree[j]
 
+        # With the teleport/dangling terms above the mass already sums to ~1;
+        # this renormalisation only guards against floating-point drift so the
+        # returned scores stay a proper distribution (sum == 1).
         s = sum(new_rank)
         if s == 0:
             break

@@ -286,10 +286,9 @@ class ApiRouter:
         if route == "/pagerank" and method == "GET":
             top = _to_int(query.get("top"), 20)
             refresh = _to_bool(query.get("refresh"), False)
-            result = self.service.compute_pagerank(top=top, force=refresh)
-            for item in result.get("top", []):
-                item["score"] = round(item["score"] * 100.0, 8)
-            return 200, result
+            # Scores are served as-is: a probability distribution over nodes
+            # (each in [0, 1], summing to 1).
+            return 200, self.service.compute_pagerank(top=top, force=refresh)
 
         # --- recommendations ---
         m = re.fullmatch(r"/recommend/(\d+)", route)
