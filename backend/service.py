@@ -400,6 +400,7 @@ class SocialGraphService:
         return -1
 
     def compute_pagerank(self, top: int = 20, force: bool = False) -> dict:
+        damping = self._pagerank_damping()
         with self._lock:
             if (
                 not force
@@ -409,15 +410,10 @@ class SocialGraphService:
                 ranks = self._pagerank_cache
             else:
                 graph = self.get_graph()
-                settings = self.settings.get()
-                damping = config.PAGERANK_DAMPING_OVERRIDE
-                with config.Timed() as timer:
-                    ranks = pagerank(graph, damping=damping)
-                with self._lock:
-                    self._pagerank_cache = ranks
-                    self._pagerank_dirty = False
+                ranks = pagerank(graph, damping=damping)
+                self._pagerank_cache = ranks
+                self._pagerank_dirty = False
                 self.derived.save_pagerank(ranks)
-                elapsed = timer.elapsed_ms
         top_ranks = algorithms.top_pagerank(ranks, top)
         users = self.store.load_users()
         items = [
@@ -431,8 +427,24 @@ class SocialGraphService:
         return {
             "top": items,
             "computed_at": config.now_ms(),
-            "damping": self.settings.get()["algorithm"]["pagerankDamping"],
+            "damping": damping,
         }
+
+    def _pagerank_damping(self) -> float:
+        """Damping factor from the settings store, validated.
+
+        Falls back to :data:`config.PAGERANK_DAMPING` when the setting is
+        missing or outside the open interval ``(0, 1)`` -- a damping of 1.0
+        disables teleportation entirely, which breaks the convergence
+        guarantee and lets rank mass get trapped per connected component.
+        """
+        try:
+            value = float(self.settings.get()["algorithm"]["pagerankDamping"])
+        except (KeyError, TypeError, ValueError):
+            value = config.PAGERANK_DAMPING
+        if not 0.0 < value < 1.0:
+            value = config.PAGERANK_DAMPING
+        return value
 
     # ------------------------------------------------------------------
     # Recommendations

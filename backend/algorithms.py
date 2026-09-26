@@ -245,6 +245,14 @@ def pagerank(
     Handles the classic dangling-node issue (nodes with out-degree 0 would leak
     rank) by redistributing their mass uniformly.  Memory is O(n): two flat
     ``array``/list vectors of floats, no matrix.
+
+    The iteration keeps the rank vector normalised (sum == 1) by construction::
+
+        rank'[i] = ((1 - d) + d * dangling_mass) * v[i] + d * inflow[i]
+
+    where ``v`` is the teleport distribution (uniform ``1/n``, or the
+    normalised ``personalization`` map) and ``inflow[i]`` gathers
+    ``rank[j] / out_degree[j]`` over edges ``j -> i``.
     """
     n = graph.node_count
     if n == 0:
@@ -254,44 +262,55 @@ def pagerank(
     id_of = graph.node_at_index
 
     out_degree = [graph.degree(id_of(i)) for i in range(n)]
-    in_degree = [0] * n
-    for i in range(n):
-        for nb in graph.neighbors(id_of(i)):
-            in_degree[idx_of(nb)] += 1
 
+    # Teleport distribution ``v`` (sums to 1).  Uniform by default; a
+    # personalization map biases both the start vector and the teleport term
+    # so the two stay consistent.
     if personalization:
-        rank = [personalization.get(id_of(i), 0.0) for i in range(n)]
-        s = sum(rank)
-        rank = [x / s for x in rank] if s > 0 else [1.0 / n] * n
+        teleport = [
+            max(0.0, float(personalization.get(id_of(i), 0.0))) for i in range(n)
+        ]
+        s = sum(teleport)
+        teleport = [x / s for x in teleport] if s > 0 else [1.0 / n] * n
     else:
-        rank = [float(i + 1) for i in range(n)]
-        s = sum(rank) or 1.0
-        rank = [x / s for x in rank]
+        teleport = [1.0 / n] * n
 
+    # Uniform (or personalized) start: the fixed point must never depend on
+    # the internal node numbering.
+    rank = list(teleport)
     dangling = [i for i in range(n) if out_degree[i] == 0]
-    dangling_sum_prev = sum(rank[i] for i in dangling) if dangling else 0.0
 
     for _ in range(max_iter):
-        new_rank = [0.0] * n
-        teleport = (1.0 - damping)
-        for i in range(n):
-            new_rank[i] = teleport + damping * dangling_sum_prev
+        # Dangling mass is redistributed through the teleport distribution,
+        # exactly like the (1 - d) teleport term -- both are *per-node* shares
+        # of a total mass, hence the teleport-distribution scaling.
+        dangling_mass = sum(rank[i] for i in dangling) if dangling else 0.0
+        base = (1.0 - damping) + damping * dangling_mass
+        new_rank = [base * teleport[i] for i in range(n)]
 
+        # Scatter each node's rank along its outgoing edges.  The graph is
+        # undirected, so pushing to neighbours is the transpose of pulling
+        # from them; either way the scattered mass sums to
+        # ``damping * (1 - dangling_mass)``.
         for i in range(n):
+            ri = rank[i]
+            deg_i = out_degree[i]
+            if ri == 0.0 or deg_i == 0:
+                continue
+            share = damping * ri / deg_i
             for nb in graph.neighbors(id_of(i)):
-                j = idx_of(nb)
-                if out_degree[j] == 0:
-                    continue
-                new_rank[i] += damping * rank[j] / out_degree[j]
+                new_rank[idx_of(nb)] += share
 
+        # The sum is 1 by construction; renormalise only to cancel float
+        # drift so the invariant stays exact over hundreds of iterations.
         s = sum(new_rank)
-        if s == 0:
+        if s == 0.0:
             break
-        new_rank = [x / s for x in new_rank]
+        inv = 1.0 / s
+        new_rank = [x * inv for x in new_rank]
 
         delta = max(abs(new_rank[i] - rank[i]) for i in range(n))
         rank = new_rank
-        dangling_sum_prev = sum(rank[i] for i in dangling) if dangling else 0.0
         if delta < tolerance:
             break
 
